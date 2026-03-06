@@ -1,9 +1,9 @@
+use super::{
+    languages::{LANGUAGE_REGISTRY, LanguageSpec},
+    symbols::{Symbol, compute_content_hash, make_symbol_id},
+};
 use std::collections::HashMap;
-
 use tree_sitter::{Node, Parser, Tree};
-
-use super::languages::{LANGUAGE_REGISTRY, LanguageSpec};
-use super::symbols::{Symbol, compute_content_hash, make_symbol_id};
 
 /// Parse source code and extract symbols using tree-sitter.
 pub fn parse_file(content: &str, filename: &str, language: &str) -> Vec<Symbol> {

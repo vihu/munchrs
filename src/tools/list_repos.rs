@@ -1,6 +1,5 @@
-use std::time::Instant;
-
 use crate::storage::IndexStore;
+use std::time::Instant;
 
 pub fn list_repos(storage_path: Option<&str>) -> serde_json::Value {
     let start = Instant::now();

@@ -1,6 +1,5 @@
-use std::collections::HashMap;
-
 use super::symbols::Symbol;
+use std::collections::HashMap;
 
 /// A node in the symbol tree with children.
 #[derive(Debug, Clone)]

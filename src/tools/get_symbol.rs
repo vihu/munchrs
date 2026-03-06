@@ -1,9 +1,6 @@
-use std::time::Instant;
-
+use crate::{storage::IndexStore, tools::resolve_repo};
 use sha2::{Digest, Sha256};
-
-use crate::storage::IndexStore;
-use crate::tools::resolve_repo;
+use std::time::Instant;
 
 pub fn get_symbol(
     repo: &str,

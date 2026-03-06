@@ -1,7 +1,5 @@
+use crate::{storage::IndexStore, tools::resolve_repo};
 use std::time::Instant;
-
-use crate::storage::IndexStore;
-use crate::tools::resolve_repo;
 
 pub fn get_file_tree(
     repo: &str,

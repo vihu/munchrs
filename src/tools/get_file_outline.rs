@@ -1,8 +1,9 @@
+use crate::{
+    parser::{Symbol, SymbolNode, build_symbol_tree},
+    storage::IndexStore,
+    tools::resolve_repo,
+};
 use std::time::Instant;
-
-use crate::parser::{Symbol, SymbolNode, build_symbol_tree};
-use crate::storage::IndexStore;
-use crate::tools::resolve_repo;
 
 pub fn get_file_outline(
     repo: &str,

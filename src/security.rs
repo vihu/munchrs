@@ -1,5 +1,4 @@
-use std::path::Path;
-use std::{env, fs};
+use std::{env, fs, path::Path};
 
 /// Check that target path resolves within root directory.
 pub fn validate_path(root: &Path, target: &Path) -> bool {

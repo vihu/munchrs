@@ -1,8 +1,5 @@
-use std::collections::HashMap;
-use std::time::Instant;
-
-use crate::storage::IndexStore;
-use crate::tools::resolve_repo;
+use crate::{storage::IndexStore, tools::resolve_repo};
+use std::{collections::HashMap, time::Instant};
 
 pub fn get_repo_outline(repo: &str, storage_path: Option<&str>) -> serde_json::Value {
     let start = Instant::now();

@@ -1,14 +1,17 @@
-use std::collections::HashMap;
-use std::fs;
-use std::path::{Path, PathBuf};
-
-use crate::parser::{LANGUAGE_EXTENSIONS, parse_file};
-use crate::security::{
-    DEFAULT_MAX_FILE_SIZE, get_max_index_files, is_binary_file, is_secret_file, is_symlink_escape,
-    validate_path,
+use crate::{
+    parser::{LANGUAGE_EXTENSIONS, parse_file},
+    security::{
+        DEFAULT_MAX_FILE_SIZE, get_max_index_files, is_binary_file, is_secret_file,
+        is_symlink_escape, validate_path,
+    },
+    storage::IndexStore,
+    storage::index_store::{file_hash, get_git_head},
 };
-use crate::storage::IndexStore;
-use crate::storage::index_store::{file_hash, get_git_head};
+use std::{
+    collections::HashMap,
+    fs,
+    path::{Path, PathBuf},
+};
 
 /// File patterns to skip.
 const SKIP_PATTERNS: &[&str] = &[

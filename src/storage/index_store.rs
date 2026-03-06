@@ -1,11 +1,12 @@
-use std::collections::HashMap;
-use std::fs;
-use std::path::{Path, PathBuf};
-
 use chrono::Utc;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use std::{
+    collections::HashMap,
+    fs,
+    path::{Path, PathBuf},
+};
 
 use crate::parser::Symbol;
 

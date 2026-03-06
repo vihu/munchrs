@@ -1,10 +1,9 @@
+use crate::tools;
 use rmcp::{
     ErrorData as McpError, ServerHandler, handler::server::router::tool::ToolRouter,
     handler::server::wrapper::Parameters, model::*, schemars, tool, tool_handler, tool_router,
 };
 use serde::Deserialize;
-
-use crate::tools;
 
 #[derive(Clone)]
 pub struct MunchServer {

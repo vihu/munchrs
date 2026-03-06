@@ -1,5 +1,4 @@
-use crate::storage::IndexStore;
-use crate::tools::resolve_repo;
+use crate::{storage::IndexStore, tools::resolve_repo};
 
 pub fn invalidate_cache(repo: &str, storage_path: Option<&str>) -> serde_json::Value {
     let (owner, name) = match resolve_repo(repo, storage_path) {
