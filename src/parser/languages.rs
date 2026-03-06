@@ -455,6 +455,43 @@ fn cpp_spec() -> LanguageSpec {
     }
 }
 
+fn erlang_spec() -> LanguageSpec {
+    LanguageSpec {
+        ts_language: "erlang",
+        symbol_node_types: hm(&[
+            ("fun_decl", "function"),
+            ("type_alias", "type"),
+            ("opaque", "type"),
+            ("record_decl", "type"),
+        ]),
+        name_fields: HashMap::new(), // Custom extraction in extractor.rs
+        param_fields: HashMap::new(),
+        return_type_fields: HashMap::new(),
+        docstring_strategy: "preceding_comment",
+        decorator_node_type: None,
+        container_node_types: vec![],
+        constant_patterns: vec![],
+        type_patterns: vec!["type_alias", "opaque", "record_decl"],
+        decorator_from_children: false,
+    }
+}
+
+fn elixir_stub_spec() -> LanguageSpec {
+    LanguageSpec {
+        ts_language: "elixir",
+        symbol_node_types: HashMap::new(), // Custom walk handles extraction
+        name_fields: HashMap::new(),
+        param_fields: HashMap::new(),
+        return_type_fields: HashMap::new(),
+        docstring_strategy: "elixir_attribute",
+        decorator_node_type: None,
+        container_node_types: vec![],
+        constant_patterns: vec![],
+        type_patterns: vec![],
+        decorator_from_children: false,
+    }
+}
+
 /// File extension to language mapping.
 pub static LANGUAGE_EXTENSIONS: LazyLock<HashMap<&'static str, &'static str>> =
     LazyLock::new(|| {
@@ -479,6 +516,10 @@ pub static LANGUAGE_EXTENSIONS: LazyLock<HashMap<&'static str, &'static str>> =
             (".hh", "cpp"),
             (".hxx", "cpp"),
             (".swift", "swift"),
+            (".ex", "elixir"),
+            (".exs", "elixir"),
+            (".erl", "erlang"),
+            (".hrl", "erlang"),
         ])
     });
 
@@ -497,5 +538,7 @@ pub static LANGUAGE_REGISTRY: LazyLock<HashMap<&'static str, LanguageSpec>> = La
         ("c", c_spec()),
         ("swift", swift_spec()),
         ("cpp", cpp_spec()),
+        ("erlang", erlang_spec()),
+        ("elixir", elixir_stub_spec()),
     ])
 });

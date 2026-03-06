@@ -15,6 +15,10 @@ pub fn parse_file(content: &str, filename: &str, language: &str) -> Vec<Symbol> 
 
     let mut symbols = if language == "cpp" {
         parse_cpp_symbols(source_bytes, filename)
+    } else if language == "elixir" {
+        parse_elixir_symbols(source_bytes, filename)
+    } else if language == "erlang" {
+        parse_erlang_symbols(source_bytes, filename)
     } else {
         parse_with_spec(source_bytes, filename, language, spec)
     };
@@ -41,6 +45,8 @@ fn get_parser(ts_language: &str) -> Option<Parser> {
         "c_sharp" | "csharp" => parser.set_language(&tree_sitter_c_sharp::LANGUAGE.into()),
         "swift" => parser.set_language(&tree_sitter_swift::LANGUAGE.into()),
         "dart" => parser.set_language(&tree_sitter_dart::language()),
+        "elixir" => parser.set_language(&tree_sitter_elixir::LANGUAGE.into()),
+        "erlang" => parser.set_language(&tree_sitter_erlang::LANGUAGE.into()),
         _ => return None,
     };
 
@@ -361,6 +367,50 @@ fn extract_symbol(
 }
 
 fn extract_name(node: Node, spec: &LanguageSpec, source_bytes: &[u8]) -> Option<String> {
+    // Erlang: fun_decl has name in first function_clause child's first atom
+    if node.kind() == "fun_decl" {
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            if child.kind() == "function_clause" {
+                // First child of function_clause is the function name atom
+                let mut inner_cursor = child.walk();
+                for inner in child.children(&mut inner_cursor) {
+                    if inner.kind() == "atom" {
+                        return Some(node_text(inner, source_bytes));
+                    }
+                }
+            }
+        }
+        return None;
+    }
+
+    // Erlang: type_alias has name in type_name child's atom
+    if node.kind() == "type_alias" || node.kind() == "opaque" {
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            if child.kind() == "type_name" {
+                let mut inner_cursor = child.walk();
+                for inner in child.children(&mut inner_cursor) {
+                    if inner.kind() == "atom" {
+                        return Some(node_text(inner, source_bytes));
+                    }
+                }
+            }
+        }
+        return None;
+    }
+
+    // Erlang: record_decl has name as direct atom child
+    if node.kind() == "record_decl" {
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            if child.kind() == "atom" {
+                return Some(node_text(child, source_bytes));
+            }
+        }
+        return None;
+    }
+
     // Go: type_declaration name is in type_spec child
     if node.kind() == "type_declaration" {
         let mut cursor = node.walk();
@@ -644,9 +694,9 @@ fn clean_comment_markers(text: &str) -> String {
             l = l[2..].to_string();
         } else if l.starts_with("///") || l.starts_with("//!") {
             l = l[3..].to_string();
-        } else if l.starts_with("//") {
+        } else if l.starts_with("//") || l.starts_with("%%") {
             l = l[2..].to_string();
-        } else if l.starts_with('*') {
+        } else if l.starts_with('%') || l.starts_with('*') {
             l = l[1..].to_string();
         }
         if l.ends_with("*/") {
@@ -932,6 +982,362 @@ fn disambiguate_overloads(symbols: &mut [Symbol]) {
     }
 }
 
+// Elixir extraction
+
+fn parse_elixir_symbols(source_bytes: &[u8], filename: &str) -> Vec<Symbol> {
+    let Some(tree) = parse_tree("elixir", source_bytes) else {
+        return Vec::new();
+    };
+    let mut symbols = Vec::new();
+    walk_elixir(tree.root_node(), source_bytes, filename, &mut symbols, None);
+    symbols
+}
+
+fn walk_elixir(
+    node: Node,
+    source_bytes: &[u8],
+    filename: &str,
+    symbols: &mut Vec<Symbol>,
+    parent: Option<&Symbol>,
+) {
+    // Only process `call` nodes (all Elixir definitions are macro calls)
+    if node.kind() == "call"
+        && let Some(first_child) = node.child(0)
+        && first_child.kind() == "identifier"
+    {
+        let macro_name = node_text(first_child, source_bytes);
+        match macro_name.as_str() {
+            "defmodule" => {
+                if let Some(sym) = extract_elixir_module(node, source_bytes, filename, parent) {
+                    symbols.push(sym.clone());
+                    if let Some(do_block) = find_child_by_kind(node, "do_block") {
+                        let mut cursor = do_block.walk();
+                        for child in do_block.children(&mut cursor) {
+                            walk_elixir(child, source_bytes, filename, symbols, Some(&sym));
+                        }
+                    }
+                }
+                return;
+            }
+            "def" | "defp" | "defmacro" | "defmacrop" | "defdelegate" | "defguard"
+            | "defguardp" => {
+                if let Some(sym) =
+                    extract_elixir_function(node, source_bytes, filename, parent, &macro_name)
+                {
+                    symbols.push(sym);
+                }
+                return;
+            }
+            "defstruct" | "defimpl" | "defprotocol" => {
+                if let Some(sym) =
+                    extract_elixir_type(node, source_bytes, filename, parent, &macro_name)
+                {
+                    let sym_clone = sym.clone();
+                    symbols.push(sym);
+                    if macro_name == "defimpl"
+                        && let Some(do_block) = find_child_by_kind(node, "do_block")
+                    {
+                        let mut cursor = do_block.walk();
+                        for child in do_block.children(&mut cursor) {
+                            walk_elixir(child, source_bytes, filename, symbols, Some(&sym_clone));
+                        }
+                    }
+                }
+                return;
+            }
+            _ => {}
+        }
+    }
+
+    // Recurse into children for non-definition nodes
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        walk_elixir(child, source_bytes, filename, symbols, parent);
+    }
+}
+
+fn extract_elixir_module(
+    node: Node,
+    source_bytes: &[u8],
+    filename: &str,
+    parent: Option<&Symbol>,
+) -> Option<Symbol> {
+    let args = find_child_by_kind(node, "arguments")?;
+    let alias = find_child_by_kind(args, "alias")?;
+    let name = node_text(alias, source_bytes);
+
+    let qualified_name = if let Some(p) = parent {
+        format!("{}.{}", p.qualified_name, name)
+    } else {
+        name.clone()
+    };
+
+    let signature = format!("defmodule {}", name);
+    let docstring = extract_elixir_docstring(node, source_bytes, "moduledoc")
+        .or_else(|| extract_elixir_docstring(node, source_bytes, "doc"))
+        .unwrap_or_default();
+
+    let c_hash = compute_content_hash(&source_bytes[node.start_byte()..node.end_byte()]);
+
+    Some(Symbol {
+        id: make_symbol_id(filename, &qualified_name, "class"),
+        file: filename.to_string(),
+        name,
+        qualified_name,
+        kind: "class".to_string(),
+        language: "elixir".to_string(),
+        signature,
+        docstring,
+        summary: String::new(),
+        decorators: Vec::new(),
+        keywords: Vec::new(),
+        parent: parent.map(|p| p.id.clone()),
+        line: node.start_position().row + 1,
+        end_line: node.end_position().row + 1,
+        byte_offset: node.start_byte(),
+        byte_length: node.end_byte() - node.start_byte(),
+        content_hash: c_hash,
+    })
+}
+
+fn extract_elixir_function(
+    node: Node,
+    source_bytes: &[u8],
+    filename: &str,
+    parent: Option<&Symbol>,
+    macro_name: &str,
+) -> Option<Symbol> {
+    let args = find_child_by_kind(node, "arguments")?;
+
+    // Name extraction: first arg is a call node (function head) or binary_operator (defguard)
+    let name = extract_elixir_def_name(args, source_bytes)?;
+
+    let (kind, qualified_name) = if let Some(p) = parent {
+        (
+            "method".to_string(),
+            format!("{}.{}", p.qualified_name, name),
+        )
+    } else {
+        ("function".to_string(), name.clone())
+    };
+
+    // Signature: macro_name + the arguments text (up to do block)
+    let args_text = node_text(args, source_bytes);
+    // Strip trailing do: ... or keyword list from inline defs
+    let sig_text = args_text.split(", do:").next().unwrap_or(&args_text);
+    let signature = format!("{} {}", macro_name, sig_text);
+
+    let docstring = extract_elixir_docstring(node, source_bytes, "doc").unwrap_or_default();
+    let c_hash = compute_content_hash(&source_bytes[node.start_byte()..node.end_byte()]);
+
+    Some(Symbol {
+        id: make_symbol_id(filename, &qualified_name, &kind),
+        file: filename.to_string(),
+        name,
+        qualified_name,
+        kind,
+        language: "elixir".to_string(),
+        signature,
+        docstring,
+        summary: String::new(),
+        decorators: Vec::new(),
+        keywords: Vec::new(),
+        parent: parent.map(|p| p.id.clone()),
+        line: node.start_position().row + 1,
+        end_line: node.end_position().row + 1,
+        byte_offset: node.start_byte(),
+        byte_length: node.end_byte() - node.start_byte(),
+        content_hash: c_hash,
+    })
+}
+
+fn extract_elixir_type(
+    node: Node,
+    source_bytes: &[u8],
+    filename: &str,
+    parent: Option<&Symbol>,
+    macro_name: &str,
+) -> Option<Symbol> {
+    let args = find_child_by_kind(node, "arguments")?;
+
+    let name = if macro_name == "defstruct" {
+        "defstruct".to_string()
+    } else {
+        // defimpl/defprotocol: first arg is an alias
+        find_child_by_kind(args, "alias")
+            .map(|a| node_text(a, source_bytes))
+            .unwrap_or_else(|| macro_name.to_string())
+    };
+
+    let qualified_name = if let Some(p) = parent {
+        format!("{}.{}", p.qualified_name, name)
+    } else {
+        name.clone()
+    };
+
+    let args_text = node_text(args, source_bytes);
+    let signature = format!("{} {}", macro_name, args_text);
+
+    let c_hash = compute_content_hash(&source_bytes[node.start_byte()..node.end_byte()]);
+
+    Some(Symbol {
+        id: make_symbol_id(filename, &qualified_name, "type"),
+        file: filename.to_string(),
+        name,
+        qualified_name,
+        kind: "type".to_string(),
+        language: "elixir".to_string(),
+        signature,
+        docstring: String::new(),
+        summary: String::new(),
+        decorators: Vec::new(),
+        keywords: Vec::new(),
+        parent: parent.map(|p| p.id.clone()),
+        line: node.start_position().row + 1,
+        end_line: node.end_position().row + 1,
+        byte_offset: node.start_byte(),
+        byte_length: node.end_byte() - node.start_byte(),
+        content_hash: c_hash,
+    })
+}
+
+fn extract_elixir_def_name(args: Node, source_bytes: &[u8]) -> Option<String> {
+    let mut cursor = args.walk();
+    for child in args.children(&mut cursor) {
+        match child.kind() {
+            // def create_user(attrs) — the function head is a call node
+            "call" => {
+                if let Some(id) = child.child(0)
+                    && id.kind() == "identifier"
+                {
+                    return Some(node_text(id, source_bytes));
+                }
+            }
+            // def to_string(account), do: ... — identifier directly
+            "identifier" => return Some(node_text(child, source_bytes)),
+            // defguard is_admin(user) when ... — binary_operator wrapping a call
+            "binary_operator" => {
+                if let Some(call) = find_child_by_kind(child, "call")
+                    && let Some(id) = call.child(0)
+                    && id.kind() == "identifier"
+                {
+                    return Some(node_text(id, source_bytes));
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+/// Look for @doc or @moduledoc attribute preceding this node in the do_block.
+fn extract_elixir_docstring(node: Node, source_bytes: &[u8], attr_name: &str) -> Option<String> {
+    // For modules, look inside the do_block for @moduledoc
+    if attr_name == "moduledoc" {
+        let do_block = find_child_by_kind(node, "do_block")?;
+        let mut cursor = do_block.walk();
+        for child in do_block.children(&mut cursor) {
+            if child.kind() == "unary_operator"
+                && let Some(doc) = try_extract_elixir_attr(child, source_bytes, attr_name)
+            {
+                return Some(doc);
+            }
+        }
+        return None;
+    }
+
+    // For functions, look at preceding siblings for @doc
+    let mut prev = node.prev_named_sibling();
+    while let Some(p) = prev {
+        if p.kind() == "unary_operator" {
+            if let Some(doc) = try_extract_elixir_attr(p, source_bytes, attr_name) {
+                return Some(doc);
+            }
+            break; // Only check the immediately preceding attribute
+        }
+        if p.kind() != "comment" {
+            break;
+        }
+        prev = p.prev_named_sibling();
+    }
+    None
+}
+
+fn try_extract_elixir_attr(node: Node, source_bytes: &[u8], attr_name: &str) -> Option<String> {
+    // unary_operator -> call -> identifier (should match attr_name)
+    let call = find_child_by_kind(node, "call")?;
+    let id = call.child(0)?;
+    if id.kind() != "identifier" || node_text(id, source_bytes) != attr_name {
+        return None;
+    }
+
+    let args = find_child_by_kind(call, "arguments")?;
+    let string_node = find_child_by_kind(args, "string")?;
+
+    // Find quoted_content inside the string
+    if let Some(content) = find_child_by_kind(string_node, "quoted_content") {
+        return Some(node_text(content, source_bytes));
+    }
+
+    // Fallback: strip triple quotes from the string text
+    let text = node_text(string_node, source_bytes);
+    Some(strip_quotes(&text))
+}
+
+fn find_child_by_kind<'a>(node: Node<'a>, kind: &str) -> Option<Node<'a>> {
+    let mut cursor = node.walk();
+    node.children(&mut cursor).find(|c| c.kind() == kind)
+}
+
+// Erlang extraction
+
+fn parse_erlang_symbols(source_bytes: &[u8], filename: &str) -> Vec<Symbol> {
+    let Some(spec) = LANGUAGE_REGISTRY.get("erlang") else {
+        return Vec::new();
+    };
+    let Some(tree) = parse_tree("erlang", source_bytes) else {
+        return Vec::new();
+    };
+
+    // First pass: extract module name from module_attribute
+    let mut module_name = None;
+    let root = tree.root_node();
+    let mut cursor = root.walk();
+    for child in root.children(&mut cursor) {
+        if child.kind() == "module_attribute"
+            && let Some(atom) = find_child_by_kind(child, "atom")
+        {
+            module_name = Some(node_text(atom, source_bytes));
+        }
+    }
+
+    // Second pass: extract symbols using standard spec-based walk
+    let mut symbols = Vec::new();
+    walk_tree(
+        root,
+        spec,
+        source_bytes,
+        filename,
+        "erlang",
+        &mut symbols,
+        None,
+        &[],
+        0,
+    );
+
+    // Qualify function names with module name
+    if let Some(ref module) = module_name {
+        for sym in &mut symbols {
+            if sym.kind == "function" {
+                sym.qualified_name = format!("{}.{}", module, sym.name);
+                sym.id = make_symbol_id(filename, &sym.qualified_name, &sym.kind);
+            }
+        }
+    }
+
+    symbols
+}
+
 // C++ helpers
 
 fn nearest_cpp_template_wrapper(node: Node) -> Option<Node> {
@@ -1034,4 +1440,156 @@ fn node_text(node: Node, source_bytes: &[u8]) -> String {
     String::from_utf8_lossy(&source_bytes[node.start_byte()..node.end_byte()])
         .trim()
         .to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_elixir_module_with_functions() {
+        let code = r#"
+defmodule MyApp.Accounts do
+  @doc """
+  Creates a user.
+  """
+  def create_user(attrs \\ %{}) do
+    Repo.insert(attrs)
+  end
+
+  defp validate(changeset) do
+    changeset
+  end
+end
+"#;
+        let symbols = parse_file(code, "lib/accounts.ex", "elixir");
+
+        let module = symbols.iter().find(|s| s.kind == "class").unwrap();
+        assert_eq!(module.name, "MyApp.Accounts");
+        assert_eq!(module.signature, "defmodule MyApp.Accounts");
+
+        let create = symbols.iter().find(|s| s.name == "create_user").unwrap();
+        assert_eq!(create.kind, "method");
+        assert_eq!(create.qualified_name, "MyApp.Accounts.create_user");
+        assert!(create.signature.starts_with("def create_user"));
+        assert!(create.docstring.contains("Creates a user."));
+
+        let validate = symbols.iter().find(|s| s.name == "validate").unwrap();
+        assert_eq!(validate.kind, "method");
+        assert_eq!(validate.qualified_name, "MyApp.Accounts.validate");
+        assert!(validate.signature.starts_with("defp validate"));
+    }
+
+    #[test]
+    fn test_elixir_defstruct_and_defimpl() {
+        let code = r#"
+defmodule User do
+  defstruct [:name, :email]
+
+  defimpl String.Chars, for: __MODULE__ do
+    def to_string(user), do: user.name
+  end
+end
+"#;
+        let symbols = parse_file(code, "lib/user.ex", "elixir");
+
+        assert!(
+            symbols
+                .iter()
+                .any(|s| s.kind == "type" && s.name == "defstruct")
+        );
+        assert!(
+            symbols
+                .iter()
+                .any(|s| s.kind == "type" && s.name == "String.Chars")
+        );
+        assert!(
+            symbols
+                .iter()
+                .any(|s| s.kind == "method" && s.name == "to_string")
+        );
+    }
+
+    #[test]
+    fn test_elixir_defmacro_defdelegate_defguard() {
+        let code = r#"
+defmodule MyApp do
+  defmacro __using__(opts) do
+    quote do: use(MyApp.Base)
+  end
+
+  defdelegate count(list), to: Enum
+
+  defguard is_admin(user) when user.role == :admin
+end
+"#;
+        let symbols = parse_file(code, "lib/my_app.ex", "elixir");
+
+        let mac = symbols.iter().find(|s| s.name == "__using__").unwrap();
+        assert_eq!(mac.kind, "method");
+
+        let deleg = symbols.iter().find(|s| s.name == "count").unwrap();
+        assert_eq!(deleg.kind, "method");
+
+        let guard = symbols.iter().find(|s| s.name == "is_admin").unwrap();
+        assert_eq!(guard.kind, "method");
+    }
+
+    #[test]
+    fn test_elixir_moduledoc() {
+        let code = r#"
+defmodule MyApp.Accounts do
+  @moduledoc """
+  Handles accounts.
+  """
+end
+"#;
+        let symbols = parse_file(code, "lib/accounts.ex", "elixir");
+        let module = symbols.iter().find(|s| s.kind == "class").unwrap();
+        assert!(module.docstring.contains("Handles accounts."));
+    }
+
+    #[test]
+    fn test_erlang_functions_and_types() {
+        let code = r#"
+-module(my_server).
+-export([start_link/1, init/1]).
+
+-type state() :: #{count => integer()}.
+
+-record(config, {port, host}).
+
+%% Starts the server.
+start_link(Args) ->
+    gen_server:start_link(?MODULE, Args, []).
+
+init(Args) ->
+    {ok, #config{port=8080}}.
+"#;
+        let symbols = parse_file(code, "src/my_server.erl", "erlang");
+
+        let start_link = symbols.iter().find(|s| s.name == "start_link").unwrap();
+        assert_eq!(start_link.kind, "function");
+        assert_eq!(start_link.qualified_name, "my_server.start_link");
+        assert!(start_link.docstring.contains("Starts the server."));
+
+        let init = symbols.iter().find(|s| s.name == "init").unwrap();
+        assert_eq!(init.kind, "function");
+        assert_eq!(init.qualified_name, "my_server.init");
+
+        let state_type = symbols.iter().find(|s| s.name == "state").unwrap();
+        assert_eq!(state_type.kind, "type");
+
+        let record = symbols.iter().find(|s| s.name == "config").unwrap();
+        assert_eq!(record.kind, "type");
+    }
+
+    #[test]
+    fn test_erlang_comment_markers() {
+        assert_eq!(
+            clean_comment_markers("%% @doc Starts the server."),
+            "@doc Starts the server."
+        );
+        assert_eq!(clean_comment_markers("% simple comment"), "simple comment");
+    }
 }
