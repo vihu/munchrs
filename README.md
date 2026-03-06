@@ -1,5 +1,8 @@
 # munchrs
 
+![GitHub Actions Workflow Status](https://img.shields.io/github/actions/workflow/status/vihu/munchrs/ci.yml)
+![GitHub Release](https://img.shields.io/github/v/release/vihu/munchrs)
+
 A fast, token-efficient MCP server for codebase indexing and symbol retrieval.
 
 **munchrs** is a Rust binary that indexes codebases using tree-sitter AST parsing and exposes tools over the Model Context Protocol (MCP) via stdio transport. It gives AI assistants structured access to your codebase — symbols, outlines, and full-text search — without dumping entire files into context.
@@ -14,6 +17,18 @@ cd munchrs
 just build
 # Binary at target/release/munchrs
 ```
+
+## Token Savings
+
+Instead of dumping entire files into an LLM context window, munchrs returns only the structure and symbols you need. Measured on the munchrs codebase itself (22 Rust files, 5,309 lines, ~42k tokens):
+
+| Approach              | What's sent to the LLM                                     | Est. tokens |
+| --------------------- | ---------------------------------------------------------- | ----------- |
+| Read all source files | 22 files verbatim                                          | ~42,000     |
+| Read 2 relevant files | `server.rs` + `extractor.rs`                               | ~15,000     |
+| munchrs tools         | repo outline + file tree + 2 file outlines + symbol search | ~1,900      |
+
+A typical "understand the codebase and find a function" workflow uses **~95% fewer tokens** compared to reading all files, or **~87% fewer** compared to reading just the right files.
 
 ## MCP Configuration
 
@@ -64,7 +79,7 @@ Python, JavaScript, TypeScript, Go, Rust, Java, PHP, Dart, C#, C, C++, Swift, El
 | `MUNCHRS_LOG_LEVEL`  | Log level (default: `info`)                             |
 | `MUNCHRS_LOG_FILE`   | Path to log file (logs to stderr if unset)              |
 | `CODE_INDEX_PATH`    | Custom index storage directory (default: `~/.munchrs/`) |
-| `OPENROUTER_API_KEY` | API key for AI-powered symbol summarization             |
+| `OPENROUTER_API_KEY` | API key for AI-powered symbol summarization (optional)  |
 
 ## Credits
 
@@ -77,7 +92,7 @@ Python, JavaScript, TypeScript, Go, Rust, Java, PHP, Dart, C#, C, C++, Swift, El
 - **Index layout:** nested `~/.munchrs/<owner>/<name>/` vs flat `~/.code-index/<slug>`
 - **Additional languages:** Elixir and Erlang support
 - **Summarization:** OpenRouter as the LLM gateway vs direct OpenAI/Gemini APIs
-- **Output format:** compact toon tables vs JSON with metadata envelopes
+- **Output format:** compact [toon](https://github.com/toon-format/toon) fmt vs JSON with metadata envelopes
 
 ## License
 
