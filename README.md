@@ -81,6 +81,26 @@ Python, JavaScript, TypeScript, Go, Rust, Java, PHP, Dart, C#, C, C++, Swift, El
 | `CODE_INDEX_PATH`    | Custom index storage directory (default: `~/.munchrs/`) |
 | `OPENROUTER_API_KEY` | API key for AI-powered symbol summarization (optional)  |
 
+## Recommended CLAUDE.md Instructions
+
+Add the following to your project's `CLAUDE.md` to teach it how to use munchrs efficiently:
+
+```markdown
+## Codebase Exploration
+
+When a `munchrs` MCP server is available, prefer it over raw file reads for codebase exploration:
+
+- Use `list_repos` to check if the repo is already indexed; if not, use `index_folder` to index it
+- Use `get_repo_outline` for a high-level overview of the codebase (directories, languages, symbol counts)
+- Use `get_file_tree` to browse the project structure before diving into specific files
+- Use `get_file_outline` to see all symbols in a file with their signatures — avoid reading entire files
+- Use `search_symbols` to find functions, classes, or types by name across the repo
+- Use `get_symbol` to fetch the full source of a specific symbol instead of reading the whole file
+- Use `get_symbols` to batch-fetch multiple symbols in one call when you need several
+- Use `search_text` as a fallback for grep-like searches (string literals, comments, config values)
+- Use `invalidate_cache` only when the index seems stale or corrupt — it forces a full re-index
+```
+
 ## Credits
 
 - All credit for the original python implementation goes to: https://github.com/jgravelle/jcodemunch-mcp
