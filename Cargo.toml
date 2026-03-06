@@ -1,0 +1,46 @@
+[package]
+name = "munchrs"
+version = "0.1.0"
+edition = "2024"
+description = "MCP server for token-efficient codebase indexing and symbol retrieval"
+license = "MIT"
+rust-version = "1.94"
+
+[[bin]]
+name = "munchrs"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = "1"
+chrono = { version = "0.4", features = ["serde"] }
+clap = { version = "4", features = ["derive", "env"] }
+dirs = "6"
+fnmatch-regex = "0.3"
+glob = "0.3"
+ignore = "0.4"
+regex = "1"
+reqwest = { version = "0.13", features = ["json"] }
+rmcp = { version = "1.1", features = ["server", "transport-io", "macros"] }
+schemars = "1"
+sha2 = "0.10"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+tokio = { version = "1", features = ["full"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tree-sitter = "0.26"
+tree-sitter-dart = "0.0.4"
+tree-sitter-c = "0.24"
+tree-sitter-cpp = "0.23"
+tree-sitter-c-sharp = "0.23"
+tree-sitter-go = "0.25"
+tree-sitter-java = "0.23"
+tree-sitter-javascript = "0.25"
+tree-sitter-php = "0.24"
+tree-sitter-python = "0.25"
+tree-sitter-rust = "0.24"
+tree-sitter-swift = "0.7"
+tree-sitter-typescript = "0.23"
+shellexpand = "3"
+walkdir = "2"
