@@ -111,7 +111,7 @@ pub fn is_binary_file(file_path: &Path) -> bool {
 }
 
 pub const DEFAULT_MAX_FILE_SIZE: u64 = 500 * 1024; // 500KB
-pub const DEFAULT_MAX_INDEX_FILES: usize = 500;
+pub const DEFAULT_MAX_INDEX_FILES: usize = 10_000;
 
 /// Resolve the maximum indexed file count from arg or environment.
 pub fn get_max_index_files(max_files: Option<usize>) -> usize {

@@ -47,17 +47,6 @@ fn should_skip_file(path: &str) -> bool {
     SKIP_PATTERNS.iter().any(|p| normalized.contains(p))
 }
 
-fn load_gitignore(folder_path: &Path) -> Option<ignore::gitignore::Gitignore> {
-    let gitignore_path = folder_path.join(".gitignore");
-    if gitignore_path.is_file() {
-        let mut builder = ignore::gitignore::GitignoreBuilder::new(folder_path);
-        builder.add(gitignore_path);
-        builder.build().ok()
-    } else {
-        None
-    }
-}
-
 pub fn discover_local_files(
     folder_path: &Path,
     max_files: Option<usize>,
@@ -79,7 +68,6 @@ pub fn discover_local_files(
         "symlink_escape",
         "path_traversal",
         "skip_pattern",
-        "gitignore",
         "extra_ignore",
         "secret",
         "wrong_extension",
@@ -91,8 +79,6 @@ pub fn discover_local_files(
         skip_counts.insert(key.to_string(), 0);
     }
 
-    let gitignore = load_gitignore(&root);
-
     // Build extra ignore matcher
     let extra_gitignore = extra_ignore_patterns.and_then(|patterns| {
         let mut builder = ignore::gitignore::GitignoreBuilder::new(&root);
@@ -102,9 +88,12 @@ pub fn discover_local_files(
         builder.build().ok()
     });
 
-    let walker = walkdir::WalkDir::new(&root)
+    let walker = ignore::WalkBuilder::new(&root)
         .follow_links(follow_symlinks)
-        .into_iter()
+        .hidden(false)
+        .ignore(false)
+        .require_git(false)
+        .build()
         .filter_map(|e| e.ok());
 
     for entry in walker {
@@ -149,15 +138,6 @@ pub fn discover_local_files(
 
         if should_skip_file(&rel_path) {
             *skip_counts.get_mut("skip_pattern").unwrap() += 1;
-            continue;
-        }
-
-        if let Some(ref gi) = gitignore
-            && gi
-                .matched_path_or_any_parents(&file_path, false)
-                .is_ignore()
-        {
-            *skip_counts.get_mut("gitignore").unwrap() += 1;
             continue;
         }
 
