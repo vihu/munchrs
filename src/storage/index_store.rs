@@ -11,7 +11,9 @@ use std::{
 use crate::parser::Symbol;
 
 /// Bump this when the index schema changes in an incompatible way.
-pub const INDEX_VERSION: u32 = 2;
+pub const INDEX_VERSION: u32 = 3;
+/// Minimum version we'll load — older indexes must be re-indexed.
+pub const MIN_INDEX_VERSION: u32 = 3;
 
 /// SHA-256 hash of file content string.
 pub fn file_hash(content: &str) -> String {
@@ -37,6 +39,8 @@ pub struct CodeIndex {
     pub repo: String,
     pub owner: String,
     pub name: String,
+    #[serde(default)]
+    pub folder_path: String,
     pub indexed_at: String,
     pub source_files: Vec<String>,
     pub languages: HashMap<String, usize>,
@@ -50,6 +54,28 @@ pub struct CodeIndex {
 }
 
 impl CodeIndex {
+    /// Resolve a relative file path to an absolute path via `folder_path`.
+    /// Returns `None` if the path contains traversal or escapes the root.
+    pub fn original_file_path(&self, relative: &str) -> Option<PathBuf> {
+        if relative.contains("..") || self.folder_path.is_empty() {
+            return None;
+        }
+        let root = Path::new(&self.folder_path);
+        let candidate = root.join(relative);
+        // Verify the resolved path stays under root
+        match candidate.canonicalize() {
+            Ok(resolved) => {
+                let root_canonical = root.canonicalize().ok()?;
+                if resolved.starts_with(&root_canonical) {
+                    Some(resolved)
+                } else {
+                    None
+                }
+            }
+            Err(_) => None,
+        }
+    }
+
     /// Find a symbol by ID.
     pub fn get_symbol(&self, symbol_id: &str) -> Option<&serde_json::Value> {
         self.symbols
@@ -190,7 +216,7 @@ impl IndexStore {
             Some(p) => PathBuf::from(p),
             None => dirs::home_dir()
                 .unwrap_or_else(|| PathBuf::from("."))
-                .join(".code-index"),
+                .join(".munchrs"),
         };
         fs::create_dir_all(&path).ok();
         Self { base_path: path }
@@ -210,51 +236,14 @@ impl IndexStore {
         Ok(value)
     }
 
-    fn repo_slug(owner: &str, name: &str) -> Result<String, String> {
+    fn index_path(&self, owner: &str, name: &str) -> Result<PathBuf, String> {
         let safe_owner = Self::safe_repo_component(owner)?;
         let safe_name = Self::safe_repo_component(name)?;
-        Ok(format!("{safe_owner}-{safe_name}"))
-    }
-
-    fn index_path(&self, owner: &str, name: &str) -> Result<PathBuf, String> {
-        let slug = Self::repo_slug(owner, name)?;
-        Ok(self.base_path.join(format!("{slug}.json")))
-    }
-
-    pub fn content_dir(&self, owner: &str, name: &str) -> Result<PathBuf, String> {
-        let slug = Self::repo_slug(owner, name)?;
-        Ok(self.base_path.join(slug))
-    }
-
-    fn safe_content_path(content_dir: &Path, relative_path: &str) -> Option<PathBuf> {
-        let candidate = content_dir.join(relative_path);
-        let base = match content_dir.canonicalize() {
-            Ok(b) => b,
-            Err(_) => {
-                // If content_dir doesn't exist yet, just check for traversal
-                if relative_path.contains("..") {
-                    return None;
-                }
-                return Some(candidate);
-            }
-        };
-        match candidate.canonicalize() {
-            Ok(resolved) => {
-                if resolved.starts_with(&base) {
-                    Some(resolved)
-                } else {
-                    None
-                }
-            }
-            Err(_) => {
-                // File doesn't exist yet — check parent
-                if relative_path.contains("..") {
-                    None
-                } else {
-                    Some(candidate)
-                }
-            }
-        }
+        Ok(self
+            .base_path
+            .join(safe_owner)
+            .join(safe_name)
+            .join("index.json"))
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -262,57 +251,38 @@ impl IndexStore {
         &self,
         owner: &str,
         name: &str,
+        folder_path: &str,
         source_files: &[String],
         symbols: &[Symbol],
-        raw_files: &HashMap<String, String>,
         languages: &HashMap<String, usize>,
-        file_hashes: Option<&HashMap<String, String>>,
+        file_hashes: &HashMap<String, String>,
         git_head: &str,
     ) -> Result<CodeIndex, String> {
-        let computed_hashes: HashMap<String, String>;
-        let hashes = match file_hashes {
-            Some(h) => h,
-            None => {
-                computed_hashes = raw_files
-                    .iter()
-                    .map(|(fp, content)| (fp.clone(), file_hash(content)))
-                    .collect();
-                &computed_hashes
-            }
-        };
-
         let index = CodeIndex {
             repo: format!("{owner}/{name}"),
             owner: owner.to_string(),
             name: name.to_string(),
+            folder_path: folder_path.to_string(),
             indexed_at: Utc::now().to_rfc3339(),
             source_files: source_files.to_vec(),
             languages: languages.clone(),
             symbols: symbols.iter().map(symbol_to_json).collect(),
             index_version: INDEX_VERSION,
-            file_hashes: hashes.clone(),
+            file_hashes: file_hashes.clone(),
             git_head: git_head.to_string(),
         };
 
-        // Save index JSON atomically
+        // Ensure nested directory exists
         let index_path = self.index_path(owner, name)?;
+        if let Some(parent) = index_path.parent() {
+            fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+        }
+
+        // Save index JSON atomically
         let tmp_path = index_path.with_extension("json.tmp");
         let json = serde_json::to_string_pretty(&index).map_err(|e| e.to_string())?;
         fs::write(&tmp_path, &json).map_err(|e| e.to_string())?;
         fs::rename(&tmp_path, &index_path).map_err(|e| e.to_string())?;
-
-        // Save raw files
-        let content_dir = self.content_dir(owner, name)?;
-        fs::create_dir_all(&content_dir).map_err(|e| e.to_string())?;
-
-        for (file_path, content) in raw_files {
-            let dest = Self::safe_content_path(&content_dir, file_path)
-                .ok_or_else(|| format!("Unsafe file path: {file_path}"))?;
-            if let Some(parent) = dest.parent() {
-                fs::create_dir_all(parent).map_err(|e| e.to_string())?;
-            }
-            fs::write(&dest, content).map_err(|e| e.to_string())?;
-        }
 
         Ok(index)
     }
@@ -324,7 +294,7 @@ impl IndexStore {
         }
         let data = fs::read_to_string(&index_path).ok()?;
         let index: CodeIndex = serde_json::from_str(&data).ok()?;
-        if index.index_version > INDEX_VERSION {
+        if index.index_version < MIN_INDEX_VERSION || index.index_version > INDEX_VERSION {
             return None;
         }
         Some(index)
@@ -338,12 +308,7 @@ impl IndexStore {
         let byte_offset = symbol.get("byte_offset")?.as_u64()? as usize;
         let byte_length = symbol.get("byte_length")?.as_u64()? as usize;
 
-        let content_dir = self.content_dir(owner, name).ok()?;
-        let file_path = Self::safe_content_path(&content_dir, file)?;
-        if !file_path.exists() {
-            return None;
-        }
-
+        let file_path = index.original_file_path(file)?;
         let data = fs::read(&file_path).ok()?;
         if byte_offset + byte_length > data.len() {
             return None;
@@ -399,7 +364,7 @@ impl IndexStore {
         new_files: &[String],
         deleted_files: &[String],
         new_symbols: &[Symbol],
-        raw_files: &HashMap<String, String>,
+        file_hashes: &HashMap<String, String>,
         languages: &HashMap<String, usize>,
         git_head: &str,
     ) -> Option<CodeIndex> {
@@ -449,8 +414,8 @@ impl IndexStore {
         for f in deleted_files {
             fh.remove(f);
         }
-        for (fp, content) in raw_files {
-            fh.insert(fp.clone(), file_hash(content));
+        for (fp, hash) in file_hashes {
+            fh.insert(fp.clone(), hash.clone());
         }
 
         let mut sorted_files: Vec<String> = source_files.into_iter().collect();
@@ -460,6 +425,7 @@ impl IndexStore {
             repo: format!("{owner}/{name}"),
             owner: owner.to_string(),
             name: name.to_string(),
+            folder_path: index.folder_path,
             indexed_at: Utc::now().to_rfc3339(),
             source_files: sorted_files,
             languages: final_languages,
@@ -471,30 +437,13 @@ impl IndexStore {
 
         // Save atomically
         if let Ok(index_path) = self.index_path(owner, name) {
+            if let Some(parent) = index_path.parent() {
+                let _ = fs::create_dir_all(parent);
+            }
             let tmp_path = index_path.with_extension("json.tmp");
             if let Ok(json) = serde_json::to_string_pretty(&updated) {
                 let _ = fs::write(&tmp_path, &json);
                 let _ = fs::rename(&tmp_path, &index_path);
-            }
-        }
-
-        // Update raw files
-        if let Ok(content_dir) = self.content_dir(owner, name) {
-            let _ = fs::create_dir_all(&content_dir);
-
-            for fp in deleted_files {
-                if let Some(dead) = Self::safe_content_path(&content_dir, fp) {
-                    let _ = fs::remove_file(dead);
-                }
-            }
-
-            for (fp, content) in raw_files {
-                if let Some(dest) = Self::safe_content_path(&content_dir, fp) {
-                    if let Some(parent) = dest.parent() {
-                        let _ = fs::create_dir_all(parent);
-                    }
-                    let _ = fs::write(&dest, content);
-                }
             }
         }
 
@@ -503,48 +452,57 @@ impl IndexStore {
 
     pub fn list_repos(&self) -> Vec<serde_json::Value> {
         let mut repos = Vec::new();
-        let entries = match fs::read_dir(&self.base_path) {
+        let owners = match fs::read_dir(&self.base_path) {
             Ok(e) => e,
             Err(_) => return repos,
         };
 
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.extension().map(|e| e == "json").unwrap_or(false)
-                && let Ok(data) = fs::read_to_string(&path)
-                && let Ok(index) = serde_json::from_str::<serde_json::Value>(&data)
-            {
-                repos.push(serde_json::json!({
-                            "repo": index.get("repo").and_then(|v| v.as_str()).unwrap_or(""),
-                            "indexed_at": index.get("indexed_at").and_then(|v| v.as_str()).unwrap_or(""),
-                            "symbol_count": index.get("symbols").and_then(|v| v.as_array()).map(|a| a.len()).unwrap_or(0),
-                            "file_count": index.get("source_files").and_then(|v| v.as_array()).map(|a| a.len()).unwrap_or(0),
-                            "languages": index.get("languages").cloned().unwrap_or(serde_json::json!({})),
-                            "index_version": index.get("index_version").and_then(|v| v.as_u64()).unwrap_or(1),
-                        }));
+        for owner_entry in owners.flatten() {
+            let owner_path = owner_entry.path();
+            if !owner_path.is_dir() {
+                continue;
+            }
+            let names = match fs::read_dir(&owner_path) {
+                Ok(e) => e,
+                Err(_) => continue,
+            };
+            for name_entry in names.flatten() {
+                let name_path = name_entry.path();
+                if !name_path.is_dir() {
+                    continue;
+                }
+                let index_file = name_path.join("index.json");
+                if let Ok(data) = fs::read_to_string(&index_file)
+                    && let Ok(index) = serde_json::from_str::<serde_json::Value>(&data)
+                {
+                    repos.push(serde_json::json!({
+                        "repo": index.get("repo").and_then(|v| v.as_str()).unwrap_or(""),
+                        "folder_path": index.get("folder_path").and_then(|v| v.as_str()).unwrap_or(""),
+                        "indexed_at": index.get("indexed_at").and_then(|v| v.as_str()).unwrap_or(""),
+                        "symbol_count": index.get("symbols").and_then(|v| v.as_array()).map(|a| a.len()).unwrap_or(0),
+                        "file_count": index.get("source_files").and_then(|v| v.as_array()).map(|a| a.len()).unwrap_or(0),
+                        "languages": index.get("languages").cloned().unwrap_or(serde_json::json!({})),
+                        "index_version": index.get("index_version").and_then(|v| v.as_u64()).unwrap_or(1),
+                    }));
+                }
             }
         }
         repos
     }
 
     pub fn delete_index(&self, owner: &str, name: &str) -> bool {
-        let mut deleted = false;
-
-        if let Ok(index_path) = self.index_path(owner, name)
-            && index_path.exists()
-        {
-            let _ = fs::remove_file(&index_path);
-            deleted = true;
+        let index_path = match self.index_path(owner, name) {
+            Ok(p) => p,
+            Err(_) => return false,
+        };
+        if !index_path.exists() {
+            return false;
         }
-
-        if let Ok(content_dir) = self.content_dir(owner, name)
-            && content_dir.exists()
-        {
-            let _ = fs::remove_dir_all(&content_dir);
-            deleted = true;
+        // Remove the {owner}/{name}/ directory containing index.json
+        if let Some(project_dir) = index_path.parent() {
+            let _ = fs::remove_dir_all(project_dir);
         }
-
-        deleted
+        true
     }
 }
 

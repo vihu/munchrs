@@ -335,11 +335,11 @@ pub fn index_folder(
         let files_to_parse: std::collections::HashSet<&String> =
             changed.iter().chain(new.iter()).collect();
         let mut new_symbols = Vec::new();
-        let mut raw_files_subset: HashMap<String, String> = HashMap::new();
+        let mut file_hashes_subset: HashMap<String, String> = HashMap::new();
 
         for rel_path in &files_to_parse {
             if let Some(content) = current_files.get(*rel_path) {
-                raw_files_subset.insert((*rel_path).clone(), content.clone());
+                file_hashes_subset.insert((*rel_path).clone(), file_hash(content));
                 let ext_pos = rel_path.rfind('.');
                 let ext = ext_pos.map(|p| &rel_path[p..]).unwrap_or("");
                 if let Some(&language) = LANGUAGE_EXTENSIONS.get(ext) {
@@ -361,7 +361,7 @@ pub fn index_folder(
             &new,
             &deleted,
             &new_symbols,
-            &raw_files_subset,
+            &file_hashes_subset,
             &HashMap::new(),
             &git_head,
         );
@@ -382,7 +382,6 @@ pub fn index_folder(
     // Full index path
     let mut all_symbols = Vec::new();
     let mut languages: HashMap<String, usize> = HashMap::new();
-    let mut raw_files: HashMap<String, String> = HashMap::new();
     let mut parsed_files = Vec::new();
     let mut no_symbols_files = Vec::new();
 
@@ -398,7 +397,6 @@ pub fn index_folder(
         if !symbols.is_empty() {
             let file_language = symbols[0].language.clone();
             *languages.entry(file_language).or_insert(0) += 1;
-            raw_files.insert(rel_path.clone(), content.clone());
             parsed_files.push(rel_path.clone());
             all_symbols.extend(symbols);
         } else {
@@ -425,11 +423,11 @@ pub fn index_folder(
     let result = store.save_index(
         owner,
         &repo_name,
+        &folder_path.to_string_lossy(),
         &parsed_files,
         &all_symbols,
-        &raw_files,
         &languages,
-        Some(&file_hashes),
+        &file_hashes,
         &get_git_head(&folder_path).unwrap_or_default(),
     );
 

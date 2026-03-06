@@ -41,17 +41,15 @@ pub fn search_text(
         index.source_files.iter().collect()
     };
 
-    let content_dir = match store.content_dir(&owner, &name) {
-        Ok(d) => d,
-        Err(e) => return serde_json::json!({"error": e}),
-    };
-
     let query_lower = query.to_lowercase();
     let mut matches = Vec::new();
     let mut files_searched = 0;
 
     for file_path in &files {
-        let full_path = content_dir.join(file_path);
+        let full_path = match index.original_file_path(file_path) {
+            Some(p) => p,
+            None => continue,
+        };
         let content = match std::fs::read_to_string(&full_path) {
             Ok(c) => c,
             Err(_) => continue,

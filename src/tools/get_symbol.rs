@@ -36,13 +36,11 @@ pub fn get_symbol(
 
     let mut context_before = String::new();
     let mut context_after = String::new();
-    if context_lines > 0
-        && !source.is_empty()
-        && let Ok(content_dir) = store.content_dir(&owner, &name)
-    {
+    if context_lines > 0 && !source.is_empty() {
         let file = symbol.get("file").and_then(|v| v.as_str()).unwrap_or("");
-        let file_path = content_dir.join(file);
-        if let Ok(all_text) = std::fs::read_to_string(&file_path) {
+        if let Some(file_path) = index.original_file_path(file)
+            && let Ok(all_text) = std::fs::read_to_string(&file_path)
+        {
             let all_lines: Vec<&str> = all_text.split('\n').collect();
             let start_line = symbol.get("line").and_then(|v| v.as_u64()).unwrap_or(1) as usize - 1;
             let end_line = symbol.get("end_line").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
