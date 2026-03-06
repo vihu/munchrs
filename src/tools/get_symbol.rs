@@ -1,6 +1,5 @@
-use crate::{storage::IndexStore, tools::resolve_repo};
+use crate::{format::format_symbol, storage::IndexStore, tools::resolve_repo};
 use sha2::{Digest, Sha256};
-use std::time::Instant;
 
 pub fn get_symbol(
     repo: &str,
@@ -8,26 +7,23 @@ pub fn get_symbol(
     verify: bool,
     context_lines: usize,
     storage_path: Option<&str>,
-) -> serde_json::Value {
-    let start = Instant::now();
+) -> String {
     let context_lines = context_lines.min(50);
 
     let (owner, name) = match resolve_repo(repo, storage_path) {
         Ok(r) => r,
-        Err(e) => return serde_json::json!({"error": e}),
+        Err(e) => return format!("error: {e}"),
     };
 
     let store = IndexStore::new(storage_path);
     let index = match store.load_index(&owner, &name) {
         Some(i) => i,
-        None => {
-            return serde_json::json!({"error": format!("Repository not indexed: {owner}/{name}")});
-        }
+        None => return format!("error: Repository not indexed: {owner}/{name}"),
     };
 
     let symbol = match index.get_symbol(symbol_id) {
         Some(s) => s,
-        None => return serde_json::json!({"error": format!("Symbol not found: {symbol_id}")}),
+        None => return format!("error: Symbol not found: {symbol_id}"),
     };
 
     let source = store
@@ -55,7 +51,8 @@ pub fn get_symbol(
         }
     }
 
-    let mut meta = serde_json::Map::new();
+    let mut out = String::new();
+
     if verify && !source.is_empty() {
         let mut hasher = Sha256::new();
         hasher.update(source.as_bytes());
@@ -64,67 +61,35 @@ pub fn get_symbol(
             .get("content_hash")
             .and_then(|v| v.as_str())
             .unwrap_or("");
-        if !stored_hash.is_empty() {
-            meta.insert(
-                "content_verified".to_string(),
-                serde_json::json!(actual_hash == stored_hash),
+        if !stored_hash.is_empty() && actual_hash != stored_hash {
+            out.push_str(
+                "WARNING: content hash mismatch (source may have changed since indexing)\n\n",
             );
         }
     }
 
-    let elapsed = start.elapsed().as_secs_f64() * 1000.0;
-    meta.insert(
-        "timing_ms".to_string(),
-        serde_json::json!((elapsed * 10.0).round() / 10.0),
-    );
-
-    let mut result = serde_json::json!({
-        "id": symbol.get("id"),
-        "kind": symbol.get("kind"),
-        "name": symbol.get("name"),
-        "file": symbol.get("file"),
-        "line": symbol.get("line"),
-        "end_line": symbol.get("end_line"),
-        "signature": symbol.get("signature"),
-        "decorators": symbol.get("decorators"),
-        "docstring": symbol.get("docstring"),
-        "content_hash": symbol.get("content_hash"),
-        "source": source,
-        "_meta": meta,
-    });
-
-    if !context_before.is_empty() {
-        result["context_before"] = serde_json::json!(context_before);
-    }
-    if !context_after.is_empty() {
-        result["context_after"] = serde_json::json!(context_after);
-    }
-
-    result
+    out.push_str(&format_symbol(
+        symbol,
+        &source,
+        &context_before,
+        &context_after,
+    ));
+    out
 }
 
-pub fn get_symbols(
-    repo: &str,
-    symbol_ids: &[String],
-    storage_path: Option<&str>,
-) -> serde_json::Value {
-    let start = Instant::now();
-
+pub fn get_symbols(repo: &str, symbol_ids: &[String], storage_path: Option<&str>) -> String {
     let (owner, name) = match resolve_repo(repo, storage_path) {
         Ok(r) => r,
-        Err(e) => return serde_json::json!({"error": e}),
+        Err(e) => return format!("error: {e}"),
     };
 
     let store = IndexStore::new(storage_path);
     let index = match store.load_index(&owner, &name) {
         Some(i) => i,
-        None => {
-            return serde_json::json!({"error": format!("Repository not indexed: {owner}/{name}")});
-        }
+        None => return format!("error: Repository not indexed: {owner}/{name}"),
     };
 
-    let mut symbols = Vec::new();
-    let mut errors = Vec::new();
+    let mut sections = Vec::new();
 
     for symbol_id in symbol_ids {
         match index.get_symbol(symbol_id) {
@@ -132,38 +97,17 @@ pub fn get_symbols(
                 let source = store
                     .get_symbol_content(&owner, &name, symbol_id)
                     .unwrap_or_default();
-
-                symbols.push(serde_json::json!({
-                    "id": symbol.get("id"),
-                    "kind": symbol.get("kind"),
-                    "name": symbol.get("name"),
-                    "file": symbol.get("file"),
-                    "line": symbol.get("line"),
-                    "end_line": symbol.get("end_line"),
-                    "signature": symbol.get("signature"),
-                    "decorators": symbol.get("decorators"),
-                    "docstring": symbol.get("docstring"),
-                    "content_hash": symbol.get("content_hash"),
-                    "source": source,
-                }));
+                sections.push(format_symbol(symbol, &source, "", ""));
             }
             None => {
-                errors.push(serde_json::json!({
-                    "id": symbol_id,
-                    "error": format!("Symbol not found: {symbol_id}"),
-                }));
+                sections.push(format!("error: Symbol not found: {symbol_id}"));
             }
         }
     }
 
-    let elapsed = start.elapsed().as_secs_f64() * 1000.0;
-
-    serde_json::json!({
-        "symbols": symbols,
-        "errors": errors,
-        "_meta": {
-            "timing_ms": (elapsed * 10.0).round() / 10.0,
-            "symbol_count": symbols.len(),
-        },
-    })
+    format!(
+        "{} symbols\n\n{}",
+        sections.len(),
+        sections.join("\n\n---\n\n")
+    )
 }

@@ -228,31 +228,23 @@ pub fn index_folder(
     extra_ignore_patterns: Option<&[String]>,
     follow_symlinks: bool,
     incremental: bool,
-) -> serde_json::Value {
+) -> String {
     let folder_path = match shellexpand::tilde(path) {
         std::borrow::Cow::Borrowed(p) => PathBuf::from(p),
         std::borrow::Cow::Owned(p) => PathBuf::from(p),
     };
     let folder_path = match folder_path.canonicalize() {
         Ok(p) => p,
-        Err(_) => {
-            return serde_json::json!({
-                "success": false,
-                "error": format!("Folder not found: {path}")
-            });
-        }
+        Err(_) => return format!("error: Folder not found: {path}"),
     };
 
     if !folder_path.is_dir() {
-        return serde_json::json!({
-            "success": false,
-            "error": format!("Path is not a directory: {path}")
-        });
+        return format!("error: Path is not a directory: {path}");
     }
 
     let max_files = get_max_index_files(None);
 
-    let (source_files, warnings, skip_counts) = discover_local_files(
+    let (source_files, _warnings, skip_counts) = discover_local_files(
         &folder_path,
         Some(max_files),
         DEFAULT_MAX_FILE_SIZE,
@@ -261,10 +253,7 @@ pub fn index_folder(
     );
 
     if source_files.is_empty() {
-        return serde_json::json!({
-            "success": false,
-            "error": "No source files found"
-        });
+        return "error: No source files found".to_string();
     }
 
     let repo_name = folder_path
@@ -303,13 +292,10 @@ pub fn index_folder(
         let (changed, new, deleted) = store.detect_changes(owner, &repo_name, &current_files);
 
         if changed.is_empty() && new.is_empty() && deleted.is_empty() {
-            return serde_json::json!({
-                "success": true,
-                "message": "No changes detected",
-                "repo": format!("{owner}/{repo_name}"),
-                "folder_path": folder_path.to_string_lossy(),
-                "changed": 0, "new": 0, "deleted": 0,
-            });
+            return format!(
+                "repo: {owner}/{repo_name}\npath: {}\nstatus: No changes detected",
+                folder_path.display()
+            );
         }
 
         let files_to_parse: std::collections::HashSet<&String> =
@@ -346,24 +332,22 @@ pub fn index_folder(
             &git_head,
         );
 
-        return serde_json::json!({
-            "success": true,
-            "repo": format!("{owner}/{repo_name}"),
-            "folder_path": folder_path.to_string_lossy(),
-            "incremental": true,
-            "changed": changed.len(),
-            "new": new.len(),
-            "deleted": deleted.len(),
-            "symbol_count": updated.map(|u| u.symbols.len()).unwrap_or(0),
-            "discovery_skip_counts": skip_counts,
-        });
+        let sym_count = updated.map(|u| u.symbols.len()).unwrap_or(0);
+        let skip_str = format_skip_counts(&skip_counts);
+        return format!(
+            "repo: {owner}/{repo_name}\npath: {}\nincremental: true\nchanged: {} | new: {} | deleted: {}\nsymbols: {sym_count}\nskipped: {skip_str}",
+            folder_path.display(),
+            changed.len(),
+            new.len(),
+            deleted.len(),
+        );
     }
 
     // Full index path
     let mut all_symbols = Vec::new();
     let mut languages: HashMap<String, usize> = HashMap::new();
     let mut parsed_files = Vec::new();
-    let mut no_symbols_files = Vec::new();
+    let mut no_symbols_count = 0usize;
 
     for (rel_path, content) in &current_files {
         let ext_pos = rel_path.rfind('.');
@@ -380,15 +364,12 @@ pub fn index_folder(
             parsed_files.push(rel_path.clone());
             all_symbols.extend(symbols);
         } else {
-            no_symbols_files.push(rel_path.clone());
+            no_symbols_count += 1;
         }
     }
 
     if all_symbols.is_empty() {
-        return serde_json::json!({
-            "success": false,
-            "error": "No symbols extracted from files"
-        });
+        return "error: No symbols extracted from files".to_string();
     }
 
     // Summarize
@@ -412,34 +393,42 @@ pub fn index_folder(
     );
 
     match result {
-        Ok(index) => {
-            let mut response = serde_json::json!({
-                "success": true,
-                "repo": format!("{owner}/{repo_name}"),
-                "folder_path": folder_path.to_string_lossy(),
-                "indexed_at": index.indexed_at,
-                "file_count": parsed_files.len(),
-                "symbol_count": all_symbols.len(),
-                "languages": languages,
-                "files": &parsed_files[..parsed_files.len().min(20)],
-                "discovery_skip_counts": skip_counts,
-                "no_symbols_count": no_symbols_files.len(),
-                "no_symbols_files": &no_symbols_files[..no_symbols_files.len().min(50)],
-            });
-
-            if !warnings.is_empty() {
-                response["warnings"] = serde_json::json!(warnings);
+        Ok(_index) => {
+            let languages_str = languages
+                .iter()
+                .map(|(k, v)| format!("{k}={v}"))
+                .collect::<Vec<_>>()
+                .join(", ");
+            let skip_str = format_skip_counts(&skip_counts);
+            let mut out = format!(
+                "repo: {owner}/{repo_name}\npath: {}\nfiles: {} | symbols: {}\nlanguages: {languages_str}\nskipped: {skip_str}",
+                folder_path.display(),
+                parsed_files.len(),
+                all_symbols.len(),
+            );
+            if no_symbols_count > 0 {
+                out.push_str(&format!("\nno_symbols_files: {no_symbols_count}"));
             }
             if skip_counts.get("file_limit").copied().unwrap_or(0) > 0 {
-                response["note"] =
-                    serde_json::json!(format!("Folder has many files; indexed first {max_files}"));
+                out.push_str(&format!(
+                    "\nnote: Folder has many files; indexed first {max_files}"
+                ));
             }
-
-            response
+            out
         }
-        Err(e) => serde_json::json!({
-            "success": false,
-            "error": format!("Indexing failed: {e}")
-        }),
+        Err(e) => format!("error: Indexing failed: {e}"),
     }
+}
+
+fn format_skip_counts(counts: &HashMap<String, usize>) -> String {
+    let mut nonzero: Vec<(&String, &usize)> = counts.iter().filter(|(_, v)| **v > 0).collect();
+    if nonzero.is_empty() {
+        return "none".to_string();
+    }
+    nonzero.sort_by_key(|(k, _)| *k);
+    nonzero
+        .iter()
+        .map(|(k, v)| format!("{k}={v}"))
+        .collect::<Vec<_>>()
+        .join(", ")
 }

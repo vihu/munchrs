@@ -1,28 +1,20 @@
 use crate::{
-    parser::{Symbol, SymbolNode, build_symbol_tree},
+    format::{format_kv_header, format_symbol_nodes},
+    parser::{Symbol, build_symbol_tree},
     storage::IndexStore,
     tools::resolve_repo,
 };
-use std::time::Instant;
 
-pub fn get_file_outline(
-    repo: &str,
-    file_path: &str,
-    storage_path: Option<&str>,
-) -> serde_json::Value {
-    let start = Instant::now();
-
+pub fn get_file_outline(repo: &str, file_path: &str, storage_path: Option<&str>) -> String {
     let (owner, name) = match resolve_repo(repo, storage_path) {
         Ok(r) => r,
-        Err(e) => return serde_json::json!({"error": e}),
+        Err(e) => return format!("error: {e}"),
     };
 
     let store = IndexStore::new(storage_path);
     let index = match store.load_index(&owner, &name) {
         Some(i) => i,
-        None => {
-            return serde_json::json!({"error": format!("Repository not indexed: {owner}/{name}")});
-        }
+        None => return format!("error: Repository not indexed: {owner}/{name}"),
     };
 
     let file_symbols: Vec<&serde_json::Value> = index
@@ -32,38 +24,29 @@ pub fn get_file_outline(
         .collect();
 
     if file_symbols.is_empty() {
-        return serde_json::json!({
-            "repo": format!("{owner}/{name}"),
-            "file": file_path,
-            "language": "",
-            "symbols": [],
-        });
+        return format!(
+            "{}\n\n(no symbols)",
+            format_kv_header(&[("repo", &format!("{owner}/{name}")), ("file", file_path),])
+        );
     }
-
-    let symbol_objects: Vec<Symbol> = file_symbols
-        .iter()
-        .filter_map(|s| dict_to_symbol(s))
-        .collect();
-    let tree = build_symbol_tree(&symbol_objects);
-    let symbols_output: Vec<serde_json::Value> = tree.iter().map(node_to_dict).collect();
 
     let language = file_symbols[0]
         .get("language")
         .and_then(|v| v.as_str())
         .unwrap_or("");
 
-    let elapsed = start.elapsed().as_secs_f64() * 1000.0;
+    let symbol_objects: Vec<Symbol> = file_symbols
+        .iter()
+        .filter_map(|s| dict_to_symbol(s))
+        .collect();
+    let tree = build_symbol_tree(&symbol_objects);
 
-    serde_json::json!({
-        "repo": format!("{owner}/{name}"),
-        "file": file_path,
-        "language": language,
-        "symbols": symbols_output,
-        "_meta": {
-            "timing_ms": (elapsed * 10.0).round() / 10.0,
-            "symbol_count": symbols_output.len(),
-        },
-    })
+    let header = format_kv_header(&[
+        ("repo", &format!("{owner}/{name}")),
+        ("file", file_path),
+        ("language", language),
+    ]);
+    format!("{header}\n\n{}", format_symbol_nodes(&tree, 0))
 }
 
 fn dict_to_symbol(d: &serde_json::Value) -> Option<Symbol> {
@@ -114,22 +97,4 @@ fn dict_to_symbol(d: &serde_json::Value) -> Option<Symbol> {
             .unwrap_or("")
             .to_string(),
     })
-}
-
-fn node_to_dict(node: &SymbolNode) -> serde_json::Value {
-    let mut result = serde_json::json!({
-        "id": node.symbol.id,
-        "kind": node.symbol.kind,
-        "name": node.symbol.name,
-        "signature": node.symbol.signature,
-        "summary": node.symbol.summary,
-        "line": node.symbol.line,
-    });
-
-    if !node.children.is_empty() {
-        result["children"] =
-            serde_json::json!(node.children.iter().map(node_to_dict).collect::<Vec<_>>());
-    }
-
-    result
 }

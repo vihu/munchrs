@@ -136,7 +136,7 @@ impl MunchServer {
         self.storage_path.as_deref()
     }
 
-    /// Index a local folder containing source code. Response includes `discovery_skip_counts` (files filtered per reason), `no_symbols_count`/`no_symbols_files` (files with no extractable symbols) for diagnosing missing files.
+    /// Index a local folder containing source code. Response includes skip counts (files filtered per reason) and no_symbols_files count for diagnosing missing files.
     #[tool(name = "index_folder")]
     async fn index_folder(
         &self,
@@ -156,18 +156,14 @@ impl MunchServer {
         .await
         .map_err(|e| McpError::internal_error(e.to_string(), None))?;
 
-        Ok(CallToolResult::success(vec![Content::text(
-            serde_json::to_string_pretty(&result).unwrap_or_default(),
-        )]))
+        Ok(CallToolResult::success(vec![Content::text(result)]))
     }
 
     /// List all indexed repositories.
     #[tool(name = "list_repos")]
     fn list_repos(&self) -> Result<CallToolResult, McpError> {
         let result = tools::list_repos::list_repos(self.sp());
-        Ok(CallToolResult::success(vec![Content::text(
-            serde_json::to_string_pretty(&result).unwrap_or_default(),
-        )]))
+        Ok(CallToolResult::success(vec![Content::text(result)]))
     }
 
     /// Get the file tree of an indexed repository, optionally filtered by path prefix.
@@ -182,9 +178,7 @@ impl MunchServer {
             params.include_summaries,
             self.sp(),
         );
-        Ok(CallToolResult::success(vec![Content::text(
-            serde_json::to_string_pretty(&result).unwrap_or_default(),
-        )]))
+        Ok(CallToolResult::success(vec![Content::text(result)]))
     }
 
     /// Get all symbols (functions, classes, methods) in a file with signatures and summaries.
@@ -195,9 +189,7 @@ impl MunchServer {
     ) -> Result<CallToolResult, McpError> {
         let result =
             tools::get_file_outline::get_file_outline(&params.repo, &params.file_path, self.sp());
-        Ok(CallToolResult::success(vec![Content::text(
-            serde_json::to_string_pretty(&result).unwrap_or_default(),
-        )]))
+        Ok(CallToolResult::success(vec![Content::text(result)]))
     }
 
     /// Get the full source code of a specific symbol. Use after identifying relevant symbols via get_file_outline or search_symbols.
@@ -213,9 +205,7 @@ impl MunchServer {
             params.context_lines,
             self.sp(),
         );
-        Ok(CallToolResult::success(vec![Content::text(
-            serde_json::to_string_pretty(&result).unwrap_or_default(),
-        )]))
+        Ok(CallToolResult::success(vec![Content::text(result)]))
     }
 
     /// Get full source code of multiple symbols in one call. Efficient for loading related symbols.
@@ -225,9 +215,7 @@ impl MunchServer {
         Parameters(params): Parameters<GetSymbolsParams>,
     ) -> Result<CallToolResult, McpError> {
         let result = tools::get_symbol::get_symbols(&params.repo, &params.symbol_ids, self.sp());
-        Ok(CallToolResult::success(vec![Content::text(
-            serde_json::to_string_pretty(&result).unwrap_or_default(),
-        )]))
+        Ok(CallToolResult::success(vec![Content::text(result)]))
     }
 
     /// Search for symbols matching a query across the entire indexed repository. Returns matches with signatures and summaries.
@@ -245,9 +233,7 @@ impl MunchServer {
             params.max_results,
             self.sp(),
         );
-        Ok(CallToolResult::success(vec![Content::text(
-            serde_json::to_string_pretty(&result).unwrap_or_default(),
-        )]))
+        Ok(CallToolResult::success(vec![Content::text(result)]))
     }
 
     /// Full-text search across indexed file contents. Useful when symbol search misses (e.g., string literals, comments, config values).
@@ -263,9 +249,7 @@ impl MunchServer {
             params.max_results,
             self.sp(),
         );
-        Ok(CallToolResult::success(vec![Content::text(
-            serde_json::to_string_pretty(&result).unwrap_or_default(),
-        )]))
+        Ok(CallToolResult::success(vec![Content::text(result)]))
     }
 
     /// Get a high-level overview of an indexed repository: directories, file counts, language breakdown, symbol counts.
@@ -275,9 +259,7 @@ impl MunchServer {
         Parameters(params): Parameters<RepoParams>,
     ) -> Result<CallToolResult, McpError> {
         let result = tools::get_repo_outline::get_repo_outline(&params.repo, self.sp());
-        Ok(CallToolResult::success(vec![Content::text(
-            serde_json::to_string_pretty(&result).unwrap_or_default(),
-        )]))
+        Ok(CallToolResult::success(vec![Content::text(result)]))
     }
 
     /// Delete the index and cached files for a repository. Forces a full re-index on next index_folder call.
@@ -287,9 +269,7 @@ impl MunchServer {
         Parameters(params): Parameters<RepoParams>,
     ) -> Result<CallToolResult, McpError> {
         let result = tools::invalidate_cache::invalidate_cache(&params.repo, self.sp());
-        Ok(CallToolResult::success(vec![Content::text(
-            serde_json::to_string_pretty(&result).unwrap_or_default(),
-        )]))
+        Ok(CallToolResult::success(vec![Content::text(result)]))
     }
 }
 

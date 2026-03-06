@@ -1,25 +1,24 @@
-use crate::{storage::IndexStore, tools::resolve_repo};
-use std::time::Instant;
+use crate::{
+    format::{format_file_tree, format_kv_header},
+    storage::IndexStore,
+    tools::resolve_repo,
+};
 
 pub fn get_file_tree(
     repo: &str,
     path_prefix: &str,
     _include_summaries: bool,
     storage_path: Option<&str>,
-) -> serde_json::Value {
-    let start = Instant::now();
-
+) -> String {
     let (owner, name) = match resolve_repo(repo, storage_path) {
         Ok(r) => r,
-        Err(e) => return serde_json::json!({"error": e}),
+        Err(e) => return format!("error: {e}"),
     };
 
     let store = IndexStore::new(storage_path);
     let index = match store.load_index(&owner, &name) {
         Some(i) => i,
-        None => {
-            return serde_json::json!({"error": format!("Repository not indexed: {owner}/{name}")});
-        }
+        None => return format!("error: Repository not indexed: {owner}/{name}"),
     };
 
     let files: Vec<&String> = index
@@ -29,11 +28,14 @@ pub fn get_file_tree(
         .collect();
 
     if files.is_empty() {
-        return serde_json::json!({
-            "repo": format!("{owner}/{name}"),
-            "path_prefix": path_prefix,
-            "tree": [],
-        });
+        return format!(
+            "{}\n\n(no files)",
+            format_kv_header(&[
+                ("repo", &format!("{owner}/{name}")),
+                ("path_prefix", path_prefix),
+                ("files", "0"),
+            ])
+        );
     }
 
     // Build file->language map from symbols
@@ -47,7 +49,7 @@ pub fn get_file_tree(
         }
     }
 
-    // Build nested tree
+    // Build nested tree (reuse existing JSON tree structure for format_file_tree)
     let mut root: serde_json::Map<String, serde_json::Value> = serde_json::Map::new();
 
     for file_path in &files {
@@ -95,17 +97,11 @@ pub fn get_file_tree(
     }
 
     let tree = dict_to_list(&root);
-    let elapsed = start.elapsed().as_secs_f64() * 1000.0;
-
-    serde_json::json!({
-        "repo": format!("{owner}/{name}"),
-        "path_prefix": path_prefix,
-        "tree": tree,
-        "_meta": {
-            "timing_ms": (elapsed * 10.0).round() / 10.0,
-            "file_count": files.len(),
-        },
-    })
+    let header = format_kv_header(&[
+        ("repo", &format!("{owner}/{name}")),
+        ("files", &files.len().to_string()),
+    ]);
+    format!("{header}\n\n{}", format_file_tree(&tree, 0))
 }
 
 fn dict_to_list(node_dict: &serde_json::Map<String, serde_json::Value>) -> Vec<serde_json::Value> {

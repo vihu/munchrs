@@ -1,5 +1,8 @@
-use crate::{storage::IndexStore, tools::resolve_repo};
-use std::time::Instant;
+use crate::{
+    format::{format_kv_header, format_toon_table},
+    storage::IndexStore,
+    tools::resolve_repo,
+};
 
 pub fn search_symbols(
     repo: &str,
@@ -9,21 +12,18 @@ pub fn search_symbols(
     language: Option<&str>,
     max_results: usize,
     storage_path: Option<&str>,
-) -> serde_json::Value {
-    let start = Instant::now();
+) -> String {
     let max_results = max_results.clamp(1, 100);
 
     let (owner, name) = match resolve_repo(repo, storage_path) {
         Ok(r) => r,
-        Err(e) => return serde_json::json!({"error": e}),
+        Err(e) => return format!("error: {e}"),
     };
 
     let store = IndexStore::new(storage_path);
     let index = match store.load_index(&owner, &name) {
         Some(i) => i,
-        None => {
-            return serde_json::json!({"error": format!("Repository not indexed: {owner}/{name}")});
-        }
+        None => return format!("error: Repository not indexed: {owner}/{name}"),
     };
 
     let mut results = index.search(query, kind, file_pattern);
@@ -37,37 +37,59 @@ pub fn search_symbols(
         query_lower.split_whitespace().map(String::from).collect();
 
     let truncated = results.len() > max_results;
-    let scored_results: Vec<serde_json::Value> = results
+    let total = results.len();
+
+    let rows: Vec<Vec<String>> = results
         .into_iter()
         .take(max_results)
         .map(|sym| {
             let score = calculate_score(sym, &query_lower, &query_words);
-            serde_json::json!({
-                "id": sym.get("id"),
-                "kind": sym.get("kind"),
-                "name": sym.get("name"),
-                "file": sym.get("file"),
-                "line": sym.get("line"),
-                "signature": sym.get("signature"),
-                "summary": sym.get("summary"),
-                "score": score,
-            })
+            vec![
+                sym.get("id")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string(),
+                sym.get("kind")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string(),
+                sym.get("name")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string(),
+                sym.get("file")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string(),
+                sym.get("line")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0)
+                    .to_string(),
+                sym.get("signature")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string(),
+                score.to_string(),
+            ]
         })
         .collect();
 
-    let elapsed = start.elapsed().as_secs_f64() * 1000.0;
-
-    serde_json::json!({
-        "repo": format!("{owner}/{name}"),
-        "query": query,
-        "result_count": scored_results.len(),
-        "results": scored_results,
-        "_meta": {
-            "timing_ms": (elapsed * 10.0).round() / 10.0,
-            "total_symbols": index.symbols.len(),
-            "truncated": truncated,
-        },
-    })
+    let header = format_kv_header(&[
+        ("repo", &format!("{owner}/{name}")),
+        ("query", query),
+        ("results", &rows.len().to_string()),
+    ]);
+    let mut out = if truncated {
+        format!("{header} (truncated from {total})\n\n")
+    } else {
+        format!("{header}\n\n")
+    };
+    out.push_str(&format_toon_table(
+        &["id", "kind", "name", "file", "line", "signature", "score"],
+        &rows,
+        '|',
+    ));
+    out
 }
 
 fn calculate_score(
